@@ -26,10 +26,11 @@ void add_service(const char* service);
 void free_services(void);
 void free_names(void);
 
+void delay_ms(int milliseconds);
 void logg(const char *path, const char *format, ...);
-#include <curl/curl.h>
 void readfile(const char* path);
 void remove_specials(char* buffer);
+#include <curl/curl.h>
 int get_response_code(const char* url, int timeout_ms);
 
 const char* short_options = "d:hvt:";
@@ -41,7 +42,6 @@ const struct option long_options[] =
   {"delay", required_argument, 0, 'd'},
 
   {"txt", required_argument, 0, 1},
-  {"html", required_argument, 0, 2},
   {"db", no_argument, 0, 3},
   {"code", required_argument, 0, 4},
   {"base", required_argument, 0, 5},
@@ -54,14 +54,13 @@ struct lasth_options
   int timeout_ms;
   int delay_ms;
   const char* txt_path;
-  const char* html_path;
   const char* base_path;
 #include <stdbool.h>
   bool debug;
   int code;
 };
 
-char* tempnames;
+const char* tempnames;
 char **names = NULL;
 int len = 0;
 
@@ -72,11 +71,6 @@ int success = 0;
 
 void add_service(const char* service)
 {
-  for (int i = 0; i < slen; i++) {
-    if (services[i] != NULL && strcmp(services[i], service) == 0) {
-      return;
-    }
-  }
   slen++;
   services = (char **)realloc(services, slen * sizeof(char *));
   services[slen - 1] = strdup(service);
@@ -94,11 +88,6 @@ void free_services(void)
 
 void add_name(const char* name)
 {
-  for (int i = 0; i < len; i++) {
-    if (names[i] != NULL && strcmp(names[i], name) == 0) {
-      return;
-    }
-  }
   len++;
   names = (char **)realloc(names, len * sizeof(char *));
   names[len - 1] = strdup(name);
@@ -122,7 +111,6 @@ int main(int argc, char** argv)
     .delay_ms = 0,
     .code = 200,
     .txt_path = NULL,
-    .html_path = NULL,
     .base_path = NULL,
     .debug = false,
   };
@@ -152,9 +140,6 @@ int main(int argc, char** argv)
       case 1:
         lo.txt_path = optarg;
         break;
-      case 2:
-        lo.html_path = optarg;
-        break;
       case 3:
       case 6:
         lo.debug = true;
@@ -183,7 +168,6 @@ int main(int argc, char** argv)
 
   readfile(lo.base_path);
 
-  remove_specials(tempnames);
   char *token;
   char *str = strdup(tempnames);
   token = strtok(str, ",");
@@ -194,26 +178,33 @@ int main(int argc, char** argv)
   free(str);
 
   int code;
+  struct timeval start_time, end_time;
+  double elapsed_time;
+
+  gettimeofday(&start_time, NULL);
   for (int i = 0; i < len; i++) {
     if (i > 0){
       logg(lo.txt_path, "\n");
     }
     logg(lo.txt_path, "Checking name %s:\n", names[i]);
     for (int j = 0; j < slen; j++) {
-      char* resurl = services[j];
-      strcat(resurl, names[i]);
+      delay_ms(lo.delay_ms);
+      char resurl[4096];
+      snprintf(resurl, 4096, "%s%s", services[j], names[i]);
       code = get_response_code(resurl, lo.timeout_ms);
       if (code == lo.code) {
-        logg(lo.txt_path, "FOUND: %s%s\n", services[j], names[i]);
+        logg(lo.txt_path, "%d FOUND: code=%d, url=%s\n", j, code, resurl);
         success++;
       }
       else if (code != lo.code && lo.debug) {
-        logg(lo.txt_path, "FAILED: %s%s\n", services[j], names[i]);
+        logg(lo.txt_path, "%d FAILED: code=%d, url=%s\n", j, code, resurl);
       }
     }
   }
+  gettimeofday(&end_time, NULL);
+  elapsed_time = (end_time.tv_sec - start_time.tv_sec) + (end_time.tv_usec - start_time.tv_usec) / 1000000.0;
 
-  logg(lo.txt_path, "\nLastTrench done: %d successful in 0.3s\n", success);
+  logg(lo.txt_path, "\nLastTrench done: %d successful in %.2lfs\n", success, elapsed_time);
 
   free_names();
   free_services();
@@ -287,6 +278,10 @@ int get_response_code(const char* url, int timeout_ms)
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, clearWrite);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1);
+  curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, timeout_ms / 1000);
+
   CURLcode res = curl_easy_perform(curl);
 
   if (res == CURLE_OK) {
@@ -317,4 +312,12 @@ void usage(const char* run)
   puts("\narguments user:");
   puts("  -base <PATH>         Specify your file with links.");
   puts("  -code <CODE>         Specify your correct answer code.");
+}
+
+void delay_ms(int milliseconds)
+{
+  struct timespec ts;
+  ts.tv_sec = milliseconds / 1000;
+  ts.tv_nsec = (milliseconds % 1000) * 1000000;
+  nanosleep(&ts, NULL);
 }
