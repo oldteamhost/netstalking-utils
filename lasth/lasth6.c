@@ -18,7 +18,7 @@
 #include <time.h>
 
 #define VERSION 6.0
-#define RUN_USAGE argv[1]
+#define RUN_USAGE argv[0]
 
 void usage(const char* run);
 void add_name(const char* name);
@@ -26,28 +26,11 @@ void add_service(const char* service);
 void free_services(void);
 void free_names(void);
 
-struct http_header
-{
-  const char* dest_host;
-  const char* method;
-  const char* path;
-  const char* user_agent;
-  const char* content_type;
-  unsigned long content_len;
-  char* auth_header;
-};
-
+void logg(const char *path, const char *format, ...);
+#include <curl/curl.h>
 void readfile(const char* path);
 void remove_specials(char* buffer);
-void logg(const char *path, const char *format, ...);
-void get_redirect(const char* http_content, char* redirect_buffer, size_t buffer_size);
-int send_http_request(const char* ip, const int port, const int timeout_ms,
-    const struct http_header* header, char* response_buffer, size_t buffer_size);
-
-char* clean_url(const char* url);
-int parse_http_response_code(const char* http_content);
-void get_ip(const char* dns, char* ip_buffer, size_t buffer_size);
-int get_response_code(const char* url, const char* path, int port, int timeout_ms, struct http_header *hp);
+int get_response_code(const char* url, int timeout_ms);
 
 const char* short_options = "d:hvt:";
 const struct option long_options[] =
@@ -78,17 +61,22 @@ struct lasth_options
   int code;
 };
 
-const char* tempnames;
+char* tempnames;
 char **names = NULL;
-int len  = 0;
+int len = 0;
 
 char **services = NULL;
-int slen  = 0;
+int slen = 0;
 
 int success = 0;
 
 void add_service(const char* service)
 {
+  for (int i = 0; i < slen; i++) {
+    if (services[i] != NULL && strcmp(services[i], service) == 0) {
+      return;
+    }
+  }
   slen++;
   services = (char **)realloc(services, slen * sizeof(char *));
   services[slen - 1] = strdup(service);
@@ -97,13 +85,20 @@ void add_service(const char* service)
 void free_services(void)
 {
   for (int i = 0; i < slen; i++) {
-    free(services[i]);
+    if (services[i] != NULL)
+      free(services[i]);
   }
-  free(services);
+  if (services != NULL)
+    free(services);
 }
 
 void add_name(const char* name)
 {
+  for (int i = 0; i < len; i++) {
+    if (names[i] != NULL && strcmp(names[i], name) == 0) {
+      return;
+    }
+  }
   len++;
   names = (char **)realloc(names, len * sizeof(char *));
   names[len - 1] = strdup(name);
@@ -112,9 +107,11 @@ void add_name(const char* name)
 void free_names(void)
 {
   for (int i = 0; i < len; i++) {
-    free(names[i]);
+    if (names[i] != NULL)
+      free(names[i]);
   }
-  free(names);
+  if (names != NULL)
+    free(names);
 }
 
 int main(int argc, char** argv)
@@ -128,17 +125,6 @@ int main(int argc, char** argv)
     .html_path = NULL,
     .base_path = NULL,
     .debug = false,
-  };
-
-  struct http_header hh =
-  {
-    .auth_header = "",
-    .content_len = 0,
-    .content_type = "",
-    .method = "GET",
-    .user_agent = "lath6",
-    .path = "/",
-    .dest_host = "",
   };
 
   if (argc <= 1) {
@@ -197,6 +183,7 @@ int main(int argc, char** argv)
 
   readfile(lo.base_path);
 
+  remove_specials(tempnames);
   char *token;
   char *str = strdup(tempnames);
   token = strtok(str, ",");
@@ -212,16 +199,16 @@ int main(int argc, char** argv)
       logg(lo.txt_path, "\n");
     }
     logg(lo.txt_path, "Checking name %s:\n", names[i]);
-    logg(lo.txt_path, "SERVICE    CODE    STATE    URL\n");
     for (int j = 0; j < slen; j++) {
-      code = get_response_code(services[j], names[i], 80, lo.timeout_ms, &hh);
-      logg(lo.txt_path, "code = %d\n", code);
-      if (code == lo.code){
-        logg(lo.txt_path, "Success: %s%s\n", services[j], names[i]);
+      char* resurl = services[j];
+      strcat(resurl, names[i]);
+      code = get_response_code(resurl, lo.timeout_ms);
+      if (code == lo.code) {
+        logg(lo.txt_path, "FOUND: %s%s\n", services[j], names[i]);
         success++;
       }
-      else {
-        logg(lo.txt_path, "fuck: %s%s\n", services[j], names[i]);
+      else if (code != lo.code && lo.debug) {
+        logg(lo.txt_path, "FAILED: %s%s\n", services[j], names[i]);
       }
     }
   }
@@ -283,284 +270,38 @@ void logg(const char *path, const char *format, ...)
   va_end(args);
 }
 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <netdb.h>
-
-void get_ip(const char* dns, char* ip_buffer, size_t buffer_size)
+size_t clearWrite(void *buffer, size_t size, size_t nmemb, void *userp)
 {
-  struct addrinfo hints;
-  struct addrinfo* addrinfo_result;
-  struct sockaddr_in* addr;
-  const char* ip;
-  int res = 0;
-
-  memset(&hints, 0, sizeof(hints));
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-
-  res = getaddrinfo(dns, NULL, &hints, &addrinfo_result);
-  if (res != 0) {
-    strncpy(ip_buffer, "n/a", buffer_size);
-    return;
-  }
-
-  addr = (struct sockaddr_in*)addrinfo_result->ai_addr;
-  ip = inet_ntoa(addr->sin_addr);
-
-  strncpy(ip_buffer, ip, buffer_size);
-  ip_buffer[buffer_size - 1] = '\0';
-
-  freeaddrinfo(addrinfo_result);
+  return size * nmemb;
 }
 
-int get_response_code(const char* url, const char* path, int port, int timeout_ms, struct http_header *hp)
+int get_response_code(const char* url, int timeout_ms)
 {
-#define IP_CHAR_SIZE 16
-  char response_buffer[4096];
-  char redirect_buffer[4096];
-  char ipbuf[IP_CHAR_SIZE];
-  char* newurl = clean_url(url);
-  int send, code;
+  long response_code = 0;
 
-  hp->dest_host = newurl;
-  hp->path = path;
-
-  get_ip(newurl, ipbuf, IP_CHAR_SIZE);
-  free(newurl);
-
-  send = send_http_request(ipbuf, port, timeout_ms, hp, response_buffer, 4096);
-  if (send == -1) {
+  CURL *curl = curl_easy_init();
+  if (!curl) {
     return -1;
   }
-  get_redirect(response_buffer, redirect_buffer, 4096);
-  printf("redir = %s\n", redirect_buffer);
-  if (strcmp(response_buffer, "n/a") != 0) {
-    memset(response_buffer, 0, 4096);
-    hp->path = response_buffer;
-    send = send_http_request(ipbuf, port, timeout_ms, hp, response_buffer, 4096);
+
+  curl_easy_setopt(curl, CURLOPT_URL, url);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, clearWrite);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_ms);
+  CURLcode res = curl_easy_perform(curl);
+
+  if (res == CURLE_OK) {
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
   }
 
-  return parse_http_response_code(response_buffer);
-}
-
-#include <ctype.h>
-char* case_insensitive_strstr(const char* haystack, const char* needle)
-{
-  while (*haystack) {
-    bool match = true;
-    for (size_t i = 0; needle[i]; i++) {
-      if (tolower(haystack[i]) != tolower(needle[i])) {
-        match = false;
-        break;
-      }
-    }
-    if (match) {
-      return (char*)haystack;
-    }
-    haystack++;
-  }
-  return NULL;
-}
-
-#define DEFAULT_LOCATION 0
-#define CONTENT_LOCATION 1
-char* parse_location(const char* http_header, int type_location)
-{
-  char* location_str;
-  if (type_location == DEFAULT_LOCATION){
-    location_str = "Location:";
-  }
-  else if (type_location == CONTENT_LOCATION) {
-    location_str = "Content-Location:";
-  }
-
-  char* end_str = "\r\n";
-  char* result = NULL;
-
-  char* location_it = case_insensitive_strstr(http_header, location_str);
-  if (location_it != NULL) {
-    location_it += strlen(location_str);
-    char* end_it = strstr(location_it, end_str);
-    if (end_it != NULL) {
-      int length = end_it - location_it;
-      result = (char*)malloc(length + 1);
-      if (result != NULL) {
-        strncpy(result, location_it, length);
-        result[length] = '\0';
-
-        char* src = result;
-        char* dest = result;
-        while (*src) {
-          if (!isspace((unsigned char)*src)) {
-            *dest = *src;
-            dest++;
-          }
-          src++;
-        }
-        *dest = '\0';
-      }
-    }
-  }
-
-  return result;
-}
-
-char* parse_http_equiv(const char* html)
-{
-  char* htmll = strdup(html);
-  char* meta_str = "<meta";
-  char* http_equiv_str = "http-equiv=\"refresh\"";
-  char* content_str = "content=\"";
-  char* end_str = "\"";
-  char* url = NULL;
-
-  for (int i = 0; htmll[i]; i++) {
-    htmll[i] = tolower(htmll[i]);
-  }
-
-  char* meta_it = strstr(htmll, meta_str);
-
-  if (meta_it != NULL) {
-    char* http_equiv_it = strstr(meta_it, http_equiv_str);
-    if (http_equiv_it != NULL) {
-      char* content_it = strstr(http_equiv_it, content_str);
-      if (content_it != NULL) {
-        content_it += strlen(content_str);
-        char* end_it = strstr(content_it, end_str);
-        if (end_it != NULL) {
-          int length = end_it - content_it;
-          url = (char*)malloc(length + 1);
-          if (url != NULL) {
-            strncpy(url, content_it, length);
-            url[length] = '\0';
-            char* src = url;
-            char* dest = url;
-            while (*src) {
-              if (!isspace((unsigned char)*src)) {
-                *dest = *src;
-                dest++;
-              }
-              src++;
-            }
-
-            *dest = '\0';
-
-            /* top prefixes */
-            char* url_prefixes[] = {"0;url=", "1;url=", "2;url=", "0.0;url=", "12;url="};
-            for (int i = 0; i < sizeof(url_prefixes) / sizeof(url_prefixes[0]); i++) {
-              if (strncmp(url, url_prefixes[i], strlen(url_prefixes[i])) == 0) {
-                memmove(url, url + strlen(url_prefixes[i]), strlen(url) - strlen(url_prefixes[i]) + 1);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  free(htmll);
-  return url;
-}
-
-char* parse_url_from_js(const char* html)
-{
-  char* search_str = "window.location.href = \"";
-  char* end_str = "\"";
-  char* result = NULL;
-  char* start_pos = strstr(html, search_str);
-
-  if (start_pos != NULL) {
-    start_pos += strlen(search_str);
-    char* end_pos = strstr(start_pos, end_str);
-
-    if (end_pos != NULL) {
-      int length = end_pos - start_pos;
-      result = (char*)malloc(length + 1);
-
-      if (result != NULL) {
-        strncpy(result, start_pos, length);
-        result[length] = '\0';
-      }
-    }
-  }
-  return result;
-}
-
-void get_redirect(const char* http_content, char* redirect_buffer, size_t buffer_size)
-{
-  char* content = parse_location(http_content, DEFAULT_LOCATION);
-  if (content != NULL) {
-    strncpy(redirect_buffer, content, buffer_size - 1);
-    redirect_buffer[buffer_size - 1] = '\0';
-    free(content);
-    return;
-  }
-
-  char* content_location = parse_location(http_content, CONTENT_LOCATION);
-  if (content_location != NULL) {
-    strncpy(redirect_buffer, content_location, buffer_size - 1);
-    redirect_buffer[buffer_size - 1] = '\0';
-    free(content_location);
-    return;
-  }
-
-  char* http_equiv = parse_http_equiv(http_content);
-  if (http_equiv != NULL) {
-    strncpy(redirect_buffer, http_equiv, buffer_size - 1);
-    redirect_buffer[buffer_size - 1] = '\0';
-    free(http_equiv);
-    return;
-  }
-
-  char* window_js = parse_url_from_js(http_content);
-  if (window_js != NULL) {
-    strncpy(redirect_buffer, window_js, buffer_size - 1);
-    redirect_buffer[buffer_size - 1] = '\0';
-    free(window_js);
-    return;
-  }
-
-  redirect_buffer[0] = '\0';
-}
-
-char* clean_url(const char* url)
-{
-  const char* https_prefix = "https://";
-  const char* http_prefix = "http://";
-  const char* www_prefix = "www.";
-
-  if (strncmp(url, https_prefix, strlen(https_prefix)) == 0) {
-    url += strlen(https_prefix);
-  }
-  else if (strncmp(url, http_prefix, strlen(http_prefix)) == 0) {
-    url += strlen(http_prefix);
-  }
-
-  size_t url_length = strlen(url);
-
-  if (strncmp(url, www_prefix, strlen(www_prefix)) == 0) {
-    url += strlen(www_prefix);
-  }
-
-  const char* slash_position = strchr(url, '/');
-  if (slash_position != NULL) {
-    url_length = slash_position - url;
-  }
-
-  char* modified_url = (char*)malloc(url_length + 1);
-  strncpy(modified_url, url, url_length);
-  modified_url[url_length] = '\0';
-
-  return modified_url;
+  curl_easy_cleanup(curl);
+  return (int)response_code;
 }
 
 void usage(const char* run)
 {
   puts("LastTrench: Finding what the person left behind online.\n");
 
-  printf("usage: %s <name, name1.../)> [flags]\n\n", run);
+  printf("usage: %s <name, [name1].../> [flags]\n\n", run);
 
   puts("arguments main:");
   puts("  -h, -help            Show this help message and exit.");
@@ -576,78 +317,4 @@ void usage(const char* run)
   puts("\narguments user:");
   puts("  -base <PATH>         Specify your file with links.");
   puts("  -code <CODE>         Specify your correct answer code.");
-}
-
-int send_http_request(const char* ip, const int port, const int timeout_ms,
-    const struct http_header* header, char* response_buffer, size_t buffer_size)
-{
-  struct sockaddr_in server_addr;
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_port = htons(port);
-  inet_pton(AF_INET, ip, &server_addr.sin_addr);
-
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-  if (sockfd < 0) {
-    perror("send_http_request/create_socket");
-    return -1;
-  }
-
-  struct timeval timeout;
-  timeout.tv_sec = timeout_ms / 1000;
-  timeout.tv_usec = (timeout_ms % 1000) * 1000;
-  if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout)) == -1) {
-    perror("send_http_request/set_timeout");
-    close(sockfd);
-    return -1;
-  }
-
-  if (connect(sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-    perror("send_http_request/connect_to_host");
-    close(sockfd);
-    return -1;
-  }
-
-  char request[1024];
-  snprintf(request, sizeof(request),
-    "%s %s HTTP/1.1\r\n"
-    "Host: %s\r\n"
-    "User-Agent: %s\r\n"
-    "Content-Type: %s\r\n"
-    "Content-Length: %lu\r\n"
-    "Connection: close\r\n"
-    "Authorization: Basic %s\r\n\r\n",
-
-  header->method,
-  header->path, header->dest_host, header->user_agent, header->content_type, header->content_len, header->auth_header);
-
-  int send_req = send(sockfd, request, strlen(request), 0);
-  if (send_req == -1) {
-    perror("send_http_request/send_packet");
-    close(sockfd);
-    return -1;
-  }
-
-  size_t response_length = 0;
-  ssize_t bytes_received;
-
-  while ((bytes_received = recv(sockfd, response_buffer + response_length, buffer_size - response_length - 1, 0)) > 0) {
-    response_length += bytes_received;
-  }
-
-  response_buffer[response_length] = '\0';
-
-  close(sockfd);
-  return response_length;
-}
-
-int parse_http_response_code(const char* http_content)
-{
-  int code = -1;
-  const char* status = strstr(http_content, "HTTP/1.");
-  if (status != NULL) {
-    sscanf(status, "HTTP/1.%*d %d", &code);
-  }
-
-  return code;
 }
