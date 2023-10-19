@@ -12,7 +12,10 @@ ICMPFLOOD_EXEC = $(OBJ_DIR)/icmpflood
 IMGHST_EXEC = $(OBJ_DIR)/imghst
 LASTH_EXEC = $(OBJ_DIR)/lasth
 
-all: $(ICMPFLOOD_EXEC) $(IMGHST_EXEC) $(LASTH_EXEC)
+all: build $(ICMPFLOOD_EXEC) $(IMGHST_EXEC) $(LASTH_EXEC)
+
+build:
+	@mkdir -p $(OBJ_DIR)
 
 $(ICMPFLOOD_EXEC): $(ICMPFLOOD_SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
@@ -26,5 +29,4 @@ $(LASTH_EXEC): $(LASTH_SRC)
 clean:
 	rm -f $(ICMPFLOOD_EXEC) $(IMGHST_EXEC) $(LASTH_EXEC)
 
-.PHONY: all clean
-
+.PHONY: all clean build
