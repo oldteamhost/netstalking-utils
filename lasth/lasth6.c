@@ -111,7 +111,7 @@ int main(int argc, char** argv)
     .delay_ms = 0,
     .code = 200,
     .txt_path = NULL,
-    .base_path = NULL,
+    .base_path = "bases/minibase.txt",
     .debug = false,
   };
 
@@ -214,6 +214,7 @@ void readfile(const char* path)
 {
   FILE *file = fopen(path, "r");
   if (!file) {
+    printf("LastTrench: Base not found!\n");
     return;
   }
 
@@ -296,7 +297,7 @@ void usage(const char* run)
 {
   puts("LastTrench: Finding what the person left behind online.\n");
 
-  printf("usage: %s <name, [name1].../> [flags]\n\n", run);
+  printf("usage: %s <name1[,name1][,name3],...> [flags]\n\n", run);
 
   puts("arguments main:");
   puts("  -h, -help            Show this help message and exit.");
@@ -305,13 +306,12 @@ void usage(const char* run)
   puts("  -t, -timeout <ms>    Set timeout on response.");
   puts("  -d, -delay <ms>      Set a delay when receiving a page.");
 
-  puts("\narguments save:");
-  puts("  -txt <file>          Save output to txt.");
-  puts("  -html <path/>        Save output to html.");
-
   puts("\narguments user:");
   puts("  -base <PATH>         Specify your file with links.");
   puts("  -code <CODE>         Specify your correct answer code.");
+
+  puts("\narguments save:");
+  puts("  -txt <file>          Save output to txt.");
 }
 
 void delay_ms(int milliseconds)
