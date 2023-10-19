@@ -191,9 +191,8 @@ int get_local_ip(char* buffer)
 {
   struct sockaddr_in serv, name;
   const char* kGoogleDnsIp = "8.8.8.8";
-  int dns_port = 53, err;
+  int dns_port = 53, err __attribute__((unused));
   socklen_t namelen;
-  const char* p;
   int sock;
 
   sock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -211,7 +210,7 @@ int get_local_ip(char* buffer)
   namelen = sizeof(name);
   err = getsockname(sock, (struct sockaddr*)&name, &namelen);
 
-  p = inet_ntop(AF_INET, &name.sin_addr, buffer, 100);
+  inet_ntop(AF_INET, &name.sin_addr, buffer, 100);
 
   close(sock);
   return 0;
